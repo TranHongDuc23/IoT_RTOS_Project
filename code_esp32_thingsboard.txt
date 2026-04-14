@@ -1,0 +1,58 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+const char* ssid = "Bắt bắt Cmm";
+const char* password = "huy06122004";
+const char* mqtt_server = "mqtt.thingsboard.cloud";
+const char* token = "9bIcAfjpLTbrrBzrWtrT";
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+void setup() {
+  Serial.begin(115200); // Debug
+  Serial2.begin(115200, SERIAL_8N1, 16, 17); // RX2=16, TX2=17 kết nối với Arduino
+  
+  WiFi.begin(ssid, password);
+  client.setServer(mqtt_server, 1883);
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  if (Serial2.available()) {
+    String data = Serial2.readStringUntil('\n');
+    // Parse chuỗi ví dụ: T25H60L500
+    int tIndex = data.indexOf('T');
+    int hIndex = data.indexOf('H');
+    int lIndex = data.indexOf('L');
+
+    if (tIndex != -1 && hIndex != -1 && lIndex != -1) {
+      float temp = data.substring(tIndex + 1, hIndex).toFloat();
+      float hum = data.substring(hIndex + 1, lIndex).toFloat();
+      int light = data.substring(lIndex + 1).toInt();
+
+      // Tạo JSON đẩy lên ThingsBoard
+      StaticJsonDocument<200> doc;
+      doc["temperature"] = temp;
+      doc["humidity"] = hum;
+      doc["light"] = light;
+
+      char buffer[256];
+      serializeJson(doc, buffer);
+      client.publish("v1/devices/me/telemetry", buffer);
+    }
+  }
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    if (client.connect("ESP32_Gateway", token, NULL)) {
+      Serial.println("Connected to ThingsBoard");
+    } else {
+      delay(5000);
+    }
+  }
+}

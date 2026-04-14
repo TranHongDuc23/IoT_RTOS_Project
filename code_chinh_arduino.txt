@@ -1,0 +1,146 @@
+#include <Arduino_FreeRTOS.h>
+#include <semphr.h>
+
+// Nhúng 2 thư viện vừa tự viết vào
+#include "CustomLCD.h"
+#include "CustomDHT.h"
+
+// --- CẤU HÌNH CHÂN ---
+#define DHTPIN 4
+#define LDRPIN A0
+
+// --- BIẾN DÙNG CHUNG ---
+int sharedTemperature = 0;
+int sharedHumidity = 0;
+int sharedLight = 0;
+
+SemaphoreHandle_t xMutex;
+
+// --- KHAI BÁO TASK ---
+void TaskReadDHT(void *pvParameters);
+void TaskReadLight(void *pvParameters);
+void TaskDisplay(void *pvParameters);
+void TaskSendToESP(void *pvParameters); // Task mới để gửi dữ liệu
+
+// =========================================================
+// SETUP
+// =========================================================
+void setup() {
+  // Nâng baudrate lên 115200 để đồng bộ với ESP32
+  Serial.begin(115200); 
+  Serial.println(F("He thong IoT khoi dong...")); 
+
+  lcd_init();
+  lcd_set_cursor(0, 0);
+  lcd_print("He thong RTOS");
+
+  xMutex = xSemaphoreCreateMutex();
+  if (xMutex != NULL) {
+    // Task đọc cảm biến (Priority 1)
+    xTaskCreate(TaskReadDHT, "DHT", 110, NULL, 1, NULL); 
+    xTaskCreate(TaskReadLight, "LDR", 85, NULL, 1, NULL);
+    
+    // Task hiển thị LCD (Priority 2 - Ưu tiên cao hơn để tránh lag màn hình)
+    xTaskCreate(TaskDisplay, "LCD", 120, NULL, 2, NULL);
+
+    // Task truyền dữ liệu sang ESP32 (Priority 1)
+    // Stack size 128 là đủ để xử lý chuỗi Serial đơn giản
+    xTaskCreate(TaskSendToESP, "ToESP", 128, NULL, 1, NULL); 
+  }
+}
+
+void loop() {}
+
+// =========================================================
+// TASKS
+// =========================================================
+
+// --- Task gửi dữ liệu lên ESP32 qua Serial ---
+void TaskSendToESP(void *pvParameters) {
+  (void) pvParameters;
+  // Đợi hệ thống ổn định 3 giây trước khi bắt đầu gửi
+  vTaskDelay(3000 / portTICK_PERIOD_MS);
+
+  for (;;) {
+    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+      // Đóng gói dữ liệu theo định dạng: T[giá trị]H[giá trị]L[giá trị]
+      // Ví dụ: T25H60L450
+      Serial.print("T"); Serial.print(sharedTemperature);
+      Serial.print("H"); Serial.print(sharedHumidity);
+      Serial.print("L"); Serial.println(sharedLight); // Kết thúc bằng println (\n)
+      
+      xSemaphoreGive(xMutex);
+    }
+    // Gửi dữ liệu lên ThingsBoard mỗi 5 giây (tránh làm nghẽn server)
+    vTaskDelay(5000 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskReadDHT(void *pvParameters) {
+  (void) pvParameters;
+  
+  // Đợi 2 giây để cảm biến ổn định lúc mới khởi động
+  vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+  for (;;) {
+    int t = 0, h = 0;
+
+    // --- BẮT ĐẦU VÙNG TỚI HẠN ---
+    // Ngưng chuyển Task trong lúc này để đảm bảo timing chính xác cho DHT11
+    taskENTER_CRITICAL();
+    bool success = readCustomDHT11(DHTPIN, t, h);
+    taskEXIT_CRITICAL();
+    // --- KẾT THÚC VÙNG TỚI HẠN ---
+
+    if (success) {
+      // Chỉ cập nhật vào biến dùng chung nếu đọc thành công và lấy được Mutex
+      if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+        sharedTemperature = t;
+        sharedHumidity = h;
+        xSemaphoreGive(xMutex);
+      }
+    } else {
+      // Bạn có thể in ra Serial để debug nếu muốn biết khi nào cảm biến lỗi
+      // Serial.println("Loi doc DHT11!");
+    }
+
+    // Tăng lên 2500ms (2.5 giây) vì DHT11 cần thời gian hồi phục giữa 2 lần đọc
+    vTaskDelay(2500 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskReadLight(void *pvParameters) {
+  (void) pvParameters;
+  for (;;) {
+    int l = analogRead(LDRPIN);
+    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+      sharedLight = l;
+      xSemaphoreGive(xMutex);
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }
+}
+
+void TaskDisplay(void *pvParameters) {
+  (void) pvParameters;
+  vTaskDelay(2500 / portTICK_PERIOD_MS);
+
+  for (;;) {
+    if (xSemaphoreTake(xMutex, portMAX_DELAY) == pdTRUE) {
+      lcd_set_cursor(0, 0);
+      lcd_print("T:");
+      lcd_print_number(sharedTemperature);
+      lcd_print("C  H:");
+      lcd_print_number(sharedHumidity);
+      lcd_print("%  "); 
+
+      lcd_set_cursor(0, 1);
+      lcd_print("Light: ");
+      lcd_print_number(sharedLight);
+      lcd_print("    "); 
+      
+      xSemaphoreGive(xMutex);
+    }
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
