@@ -3,10 +3,10 @@
 #include <ArduinoJson.h>
 #include <WebServer.h>
 
-const char* ssid = "Bắt bắt Cmm";
-const char* password = "huy06122004";
+const char* ssid = "YOUR_WIFI_NAME";
+const char* password = "YOUR_WIFI_PASSWORD";
 const char* mqtt_server = "mqtt.thingsboard.cloud";
-const char* token = "9bIcAfjpLTbrrBzrWtrT";
+const char* token = "YOUR_WIFI_PASSWORD";
 
 // Biến lưu trữ dữ liệu để hiển thị lên Web
 float currentTemp = 0;
